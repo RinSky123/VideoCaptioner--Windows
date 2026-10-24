@@ -6,6 +6,7 @@ import threading
 from typing import Callable, Optional, Tuple
 
 from ..utils.logger import setup_logger
+from ..utils.silent_process import silent_run_kwargs
 
 logger = setup_logger("subprocess_helper")
 
@@ -130,6 +131,10 @@ def run_process_with_stream_reader(
         "bufsize": 1,  # 行缓冲
     }
     default_kwargs.update(popen_kwargs)
+
+    # 默认不创建控制台窗口（调用方可自行覆盖 creationflags）
+    if "creationflags" not in default_kwargs:
+        default_kwargs.update(silent_run_kwargs())
 
     # 启动进程
     process = subprocess.Popen(cmd, **default_kwargs)

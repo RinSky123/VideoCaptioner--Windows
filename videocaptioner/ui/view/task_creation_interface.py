@@ -36,6 +36,9 @@ from videocaptioner.core.entities import (
     SupportedVideoFormats,
 )
 from videocaptioner.ui.common.config import cfg
+from videocaptioner.ui.components.AudioTrackSelectionDialog import (
+    detect_and_choose_audio_track,
+)
 from videocaptioner.ui.components.DonateDialog import DonateDialog
 from videocaptioner.ui.thread.video_download_thread import VideoDownloadThread
 from videocaptioner.ui.view.log_window import LogWindow
@@ -54,6 +57,7 @@ class TaskCreationInterface(QWidget):
         super().__init__(parent)
         self.task = None
         self.log_window = None
+        self.selected_audio_track_index = 0
 
         self.setObjectName("TaskCreationInterface")
         self.setAttribute(Qt.WA_StyledBackground, True)  # type: ignore
@@ -297,6 +301,18 @@ class TaskCreationInterface(QWidget):
             return False
 
     def _process_file(self, file_path):
+        """本地文件：先检测是否多音轨，是则先让用户选音轨"""
+        index, cancelled = detect_and_choose_audio_track(file_path, self.window())
+        if cancelled:
+            InfoBar.warning(
+                self.tr("已取消"),
+                self.tr("未选择音轨，已停止创建任务"),
+                duration=INFOBAR_DURATION_WARNING,
+                parent=self,
+            )
+            return
+
+        self.selected_audio_track_index = index
         self.finished.emit(file_path)
 
     def _process_url(self, url):
@@ -327,6 +343,19 @@ class TaskCreationInterface(QWidget):
     def on_video_download_finished(self, video_file_path):
         """视频下载完成的回调函数"""
         if video_file_path:
+            # 下载完成的视频同样可能是多音轨，先让用户选择
+            index, cancelled = detect_and_choose_audio_track(
+                video_file_path, self.window()
+            )
+            if cancelled:
+                InfoBar.warning(
+                    self.tr("已取消"),
+                    self.tr("未选择音轨，已停止创建任务"),
+                    duration=INFOBAR_DURATION_WARNING,
+                    parent=self,
+                )
+                return
+            self.selected_audio_track_index = index
             self.finished.emit(video_file_path)
             InfoBar.success(
                 self.tr("下载成功"),

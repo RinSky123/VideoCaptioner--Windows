@@ -148,6 +148,8 @@ def _create_faster_whisper_asr(audio_path: str, config: TranscribeConfig) -> Chu
         "ff_mdx_kim2": config.faster_whisper_ff_mdx_kim2,
         "one_word": config.faster_whisper_one_word,
         "prompt": config.faster_whisper_prompt,
+        # 换人停顿阈值：超过就断句，避免两个人说的话并成一句
+        "max_gap_ms": config.faster_whisper_max_gap_ms,
     }
     return ChunkedASR(
         asr_class=FasterWhisperASR,

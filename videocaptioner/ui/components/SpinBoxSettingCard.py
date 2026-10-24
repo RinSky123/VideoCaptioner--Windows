@@ -67,6 +67,7 @@ class SpinBoxSettingCard(SettingCard):
         content: Optional[str] = None,
         minimum: int = 0,
         maximum: int = 100,
+        step: int = 1,
         parent=None,
     ):
         super().__init__(icon, title, content, parent)
@@ -76,6 +77,7 @@ class SpinBoxSettingCard(SettingCard):
         # 创建SpinBox
         self.spinBox = CompactSpinBox(self)
         self.spinBox.setRange(minimum, maximum)
+        self.spinBox.setSingleStep(step)
         self.spinBox.setMinimumWidth(60)
 
         # 添加到布局

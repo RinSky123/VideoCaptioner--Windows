@@ -104,6 +104,7 @@ class TranscribeOutputFormatEnum(Enum):
 class LLMServiceEnum(Enum):
     """LLM服务"""
 
+    PUBLIC_FREE = "公益模型（免 API）"
     OPENAI = "OpenAI 兼容"
     SILICON_CLOUD = "SiliconCloud"
     DEEPSEEK = "DeepSeek"
@@ -159,6 +160,17 @@ class SubtitleLayoutEnum(Enum):
     ORIGINAL_ON_TOP = "原文在上"
     ONLY_ORIGINAL = "仅原文"
     ONLY_TRANSLATE = "仅译文"
+
+
+class SubtitleSplitTypeEnum(Enum):
+    """字幕分割类型"""
+
+    SENTENCE = "句子分段"  # 按句子结构断句（一句一条）
+    SEMANTIC = "语义分段"  # 按语义断点断句（可能在句内切分）
+
+    def prompt_path(self) -> str:
+        """对应的提示词路径"""
+        return "split/sentence" if self is SubtitleSplitTypeEnum.SENTENCE else "split/semantic"
 
 
 class SubtitleRenderModeEnum(Enum):
@@ -573,6 +585,9 @@ class TranscribeConfig:
     faster_whisper_ff_mdx_kim2: bool = False
     faster_whisper_one_word: bool = True
     faster_whisper_prompt: Optional[str] = None
+    # 断句停顿阈值（毫秒）：停顿达到它就断句。
+    # faster-whisper 自身默认是 3 秒，会把中间停顿 1~2 秒的几句话并成一句。
+    faster_whisper_max_gap_ms: int = 1000
 
     def _mask_key(self, key: Optional[str]) -> str:
         """Mask sensitive key for display"""
@@ -645,6 +660,16 @@ class SubtitleConfig:
     target_language: Optional["TargetLanguage"] = None
     subtitle_style: Optional[str] = None
     custom_prompt_text: Optional[str] = None
+    # 分割类型：句子分段（一句一条）/ 语义分段
+    split_type: SubtitleSplitTypeEnum = SubtitleSplitTypeEnum.SENTENCE
+    # 断句停顿阈值（毫秒）：停顿达到它就另起一条字幕（不管是不是同一个人）
+    speaker_gap_ms: int = 1000
+    # 是否删除字幕末尾的中文标点
+    remove_punctuation: bool = True
+    # 源语言（用于字幕文件的语言标注）；为空表示自动检测
+    source_language: str = ""
+    # 公益模型（无 API）模式：不发起任何 LLM 请求
+    offline_mode: bool = False
 
     def _mask_key(self, key: Optional[str]) -> str:
         """Mask sensitive key for display"""

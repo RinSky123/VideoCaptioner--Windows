@@ -435,11 +435,19 @@ def get_video_info(
             r"Stream #\d+:(\d+)(?:\[0x[0-9a-fA-F]+\])?(?:\(([a-z]{3})\))?: Audio: (\w+)",
             info,
         ):
+            # 音轨标题在流信息之后的 metadata 行里（如 "title           : 国语"），
+            # 只取紧随该流、到下一条 Stream 之前的部分。
+            tail = info[match.end() :]
+            next_stream = re.search(r"\n\s*Stream #", tail)
+            block = tail[: next_stream.start()] if next_stream else tail
+            title_match = re.search(r"^\s*title\s*:\s*(.+?)\s*$", block, re.M)
+
             audio_streams.append(
                 AudioStreamInfo(
                     index=int(match.group(1)),
                     codec=match.group(3),
                     language=match.group(2) or "",
+                    title=title_match.group(1) if title_match else "",
                 )
             )
 

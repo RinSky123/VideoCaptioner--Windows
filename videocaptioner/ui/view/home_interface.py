@@ -77,6 +77,10 @@ class HomeInterface(QWidget):
         transcribe_task = TaskFactory.create_transcribe_task(
             file_path, need_next_task=True, task_id=self._current_task_id
         )
+        # 任务创建页可能已让用户选好音轨，带过来避免重复询问
+        transcribe_task.selected_audio_track_index = (
+            self.task_creation_interface.selected_audio_track_index
+        )
         self.transcription_interface.set_task(transcribe_task)
         self.transcription_interface.process()
         self.stackedWidget.setCurrentWidget(self.transcription_interface)

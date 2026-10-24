@@ -31,6 +31,24 @@ _WORD_SPLIT_PATTERN = (
 )
 
 
+def _estimated_duration(text: str) -> int:
+    """按文本长度估算一条字幕的自然朗读时长（毫秒）。
+
+    中文约 5 字/秒，其它语言约 2.5 词/秒。仅用于给"跨静音的长尾"设上限，
+    不追求精确。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return 0
+
+    if is_mainly_cjk(stripped):
+        cjk_chars = sum(1 for ch in stripped if "一" <= ch <= "鿿")
+        return int(cjk_chars / 5.0 * 1000)
+
+    words = re.findall(_WORD_SPLIT_PATTERN, stripped)
+    return int(len(words) / 2.5 * 1000)
+
+
 def handle_long_path(path: str) -> str:
     r"""Handle Windows long path limitation by adding \\?\ prefix.
 
@@ -478,6 +496,52 @@ class ASRData:
                                 translated_text=merged_translated)
         self.segments[index] = merged_seg
         del self.segments[index + 1]
+
+    def enforce_timing(self, max_display_ms: Optional[int] = None) -> "ASRData":
+        """让每条字幕严格落在自己的语音区间内。
+
+        处理三种会导致"字幕从上一句开始"的情况：
+
+        1. 重叠：segment 的起点早于上一条的终点 —— 说明它把上一句的尾巴
+           也包了进来，这里裁掉重叠部分，起点对齐到上一条结束之后。
+        2. 起点为空：起点 >= 终点，或时长为 0 —— 给一个最小可见时长。
+        3. 过长：一条字幕跨越了后面的静音 —— 按文本长度估算合理时长后截断，
+           避免字幕在整个静音期间一直挂着。
+
+        Args:
+            max_display_ms: 单条字幕最大显示时长；None 表示只做重叠裁剪，
+                不按文本长度截断（保留原始识别时长）。
+
+        Returns:
+            Self for method chaining
+        """
+        if not self.segments:
+            return self
+
+        self.segments.sort(key=lambda s: s.start_time)
+
+        MIN_DURATION_MS = 300
+        prev_end = None
+
+        for seg in self.segments:
+            # 1. 裁掉与上一条的重叠
+            if prev_end is not None and seg.start_time < prev_end:
+                # 若重叠过多导致几乎没有时长，宁可从上一句结束处开始
+                seg.start_time = prev_end
+
+            # 2. 保证有效时长
+            if seg.end_time <= seg.start_time:
+                seg.end_time = seg.start_time + MIN_DURATION_MS
+
+            # 3. 按文本长度估算上限，去掉跨越静音的长尾巴
+            if max_display_ms is not None:
+                limit = min(max_display_ms, _estimated_duration(seg.text) + 400)
+                if seg.end_time - seg.start_time > limit:
+                    seg.end_time = seg.start_time + max(limit, MIN_DURATION_MS)
+
+            prev_end = seg.end_time
+
+        return self
 
     def optimize_timing(self, threshold_ms: int = 1000) -> "ASRData":
         """Optimize subtitle display timing by adjusting adjacent segment boundaries.

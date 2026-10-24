@@ -10,6 +10,7 @@ from typing import Any, Callable, List, Optional, Union
 
 from ...config import MODEL_PATH
 from ..utils.logger import setup_logger
+from ..utils.silent_process import silent_run_kwargs
 from ..utils.subprocess_helper import StreamReader
 from .asr_data import ASRData, ASRDataSeg
 from .base import BaseASR
@@ -155,6 +156,7 @@ class WhisperCppASR(BaseASR):
                     text=True,
                     encoding="utf-8",
                     bufsize=1,
+                    **silent_run_kwargs(),
                 )
 
                 logger.debug(f"Whisper.cpp process started, PID: {self.process.pid}")

@@ -7,6 +7,7 @@ from videocaptioner.core.entities import (
     LANGUAGES,
     FullProcessTask,
     LLMServiceEnum,
+    TranscribeLanguageEnum,
     SubtitleConfig,
     SubtitleTask,
     SynthesisConfig,
@@ -14,8 +15,38 @@ from videocaptioner.core.entities import (
     TranscribeConfig,
     TranscribeTask,
     TranscriptAndSubtitleTask,
+    TranslatorServiceEnum,
 )
 from videocaptioner.ui.common.config import cfg
+
+
+# 转录语言（中文名）-> 语言代码；用于字幕文件的语言标注
+_SOURCE_LANGUAGE_CODES = {
+    "中文": "zh-cn",
+    "英语": "en",
+    "日本語": "ja",
+    "日语": "ja",
+    "韩语": "ko",
+    "粤语": "zh-yue",
+    "法语": "fr",
+    "德语": "de",
+    "西班牙语": "es",
+    "俄语": "ru",
+    "葡萄牙语": "pt",
+    "土耳其语": "tr",
+    "波兰语": "pl",
+    "加泰罗尼亚语": "ca",
+    "荷兰语": "nl",
+    "阿拉伯语": "ar",
+}
+
+
+def _source_language_code() -> str:
+    """把"转录语言"设置转成语言代码；自动检测返回空串。"""
+    label = cfg.transcribe_language.value.value
+    if label == TranscribeLanguageEnum.AUTO.value:
+        return ""
+    return _SOURCE_LANGUAGE_CODES.get(label, "")
 
 
 class TaskFactory:
@@ -93,6 +124,8 @@ class TaskFactory:
             faster_whisper_ff_mdx_kim2=cfg.faster_whisper_ff_mdx_kim2.value,
             faster_whisper_one_word=cfg.faster_whisper_one_word.value,
             faster_whisper_prompt=cfg.faster_whisper_prompt.value,
+            # 换人停顿阈值：超过就断句，避免两个人说的话并成一句
+            faster_whisper_max_gap_ms=cfg.speaker_gap_ms.value,
         )
 
         task = TranscribeTask(
@@ -122,18 +155,22 @@ class TaskFactory:
             f"-{cfg.translator_service.value.value}" if cfg.need_translate.value else ""
         )
 
-        if need_next_task:
-            output_path = str(
-                Path(file_path).parent / f"【样式字幕】{output_name}{suffix}.ass"
-            )
-        else:
-            output_path = str(
-                Path(file_path).parent / f"【字幕】{output_name}{suffix}.srt"
-            )
+        # 统一输出 SRT；实际文件名在保存时按语言标注重新生成
+        output_path = str(
+            Path(file_path).parent / f"【字幕】{output_name}{suffix}.srt"
+        )
 
         # 根据当前选择的LLM服务获取对应的配置
         current_service = cfg.llm_service.value
-        if current_service == LLMServiceEnum.OPENAI:
+
+        # 公益模型：没有 API Key，翻译交给免费接口（必应/谷歌）。
+        # 同时关闭需要 LLM 的环节，避免没有密钥时直接报错。
+        public_free_mode = current_service == LLMServiceEnum.PUBLIC_FREE
+        if public_free_mode:
+            base_url = ""
+            api_key = ""
+            llm_model = ""
+        elif current_service == LLMServiceEnum.OPENAI:
             base_url = cfg.openai_api_base.value
             api_key = cfg.openai_api_key.value
             llm_model = cfg.openai_model.value
@@ -166,6 +203,21 @@ class TaskFactory:
             api_key = ""
             llm_model = ""
 
+        # 公益模型下不发任何 LLM 请求：翻译走免费接口，关闭需要大模型的步骤
+        if public_free_mode:
+            translator_service = cfg.translator_service.value
+            if translator_service not in (
+                TranslatorServiceEnum.BING,
+                TranslatorServiceEnum.GOOGLE,
+            ):
+                translator_service = TranslatorServiceEnum.BING
+            need_optimize = False
+            need_reflect = False
+        else:
+            translator_service = cfg.translator_service.value
+            need_optimize = cfg.need_optimize.value
+            need_reflect = cfg.need_reflect_translate.value
+
         config = SubtitleConfig(
             # 翻译配置
             base_url=base_url,
@@ -173,11 +225,11 @@ class TaskFactory:
             llm_model=llm_model,
             deeplx_endpoint=cfg.deeplx_endpoint.value,
             # 翻译服务
-            translator_service=cfg.translator_service.value,
+            translator_service=translator_service,
             # 字幕处理
-            need_reflect=cfg.need_reflect_translate.value,
+            need_reflect=need_reflect,
             need_translate=cfg.need_translate.value,
-            need_optimize=cfg.need_optimize.value,
+            need_optimize=need_optimize,
             thread_num=cfg.thread_num.value,
             batch_size=cfg.batch_size.value,
             # 字幕布局、样式
@@ -187,10 +239,17 @@ class TaskFactory:
             max_word_count_cjk=cfg.max_word_count_cjk.value,
             max_word_count_english=cfg.max_word_count_english.value,
             need_split=cfg.need_split.value,
+            split_type=cfg.split_type.value,
+            speaker_gap_ms=cfg.speaker_gap_ms.value,
+            remove_punctuation=cfg.remove_punctuation.value,
             # 字幕翻译
             target_language=cfg.target_language.value,
             # 字幕提示
             custom_prompt_text=cfg.custom_prompt_text.value,
+            # 源语言（用于字幕文件的语言标注）；自动检测时留空
+            source_language=_source_language_code(),
+            # 公益模型：只走免费翻译与规则断句
+            offline_mode=public_free_mode,
         )
 
         task = SubtitleTask(

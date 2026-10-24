@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Union
 
 from videocaptioner.core.asr.asr_data import ASRData, ASRDataSeg
+from videocaptioner.core.entities import SubtitleSplitTypeEnum
 from videocaptioner.core.split.split_by_llm import split_by_llm
 from videocaptioner.core.utils.logger import setup_logger
 from videocaptioner.core.utils.text_utils import (
@@ -42,6 +43,12 @@ MIN_GROUP_SIZE = 5  # 最小分组大小
 # 规则分割
 RULE_SPLIT_GAP = 500  # 规则分割时间间隔阈值(毫秒)
 RULE_MIN_SEGMENT_SIZE = 4  # 规则分割最小Segments大小
+
+# 断句停顿阈值：说完一句话后停顿 >= 这个时长，就另起一条字幕。
+# 不管是一个人还是两个人在说 —— 停顿本身就是天然的句子边界。
+# 这是"几句话被并进同一句"的直接原因：以前无论间隔多大，
+# 只要合起来没超过字数上限就会被拼成一条。
+PAUSE_SPLIT_MS = 1000
 
 # 常见词分割
 PREFIX_WORD_RATIO = 0.6  # 前缀词分割比例
@@ -94,6 +101,9 @@ class SubtitleSplitter:
         model,
         max_word_count_cjk: int = MAX_WORD_COUNT_CJK,
         max_word_count_english: int = MAX_WORD_COUNT_ENGLISH,
+        rules_only: bool = False,
+        split_type=SubtitleSplitTypeEnum.SENTENCE,
+        speaker_gap_ms: int = PAUSE_SPLIT_MS,
     ):
         """初始化分割器
 
@@ -102,11 +112,20 @@ class SubtitleSplitter:
             model: LLM模型名称
             max_word_count_cjk: CJK最大字数
             max_word_count_english: 英文最大单词数
+            rules_only: 只用规则断句，不调用大模型
+            split_type: 句子分段 / 语义分段
+            speaker_gap_ms: 断句停顿阈值（毫秒）。停顿达到这个时长就另起
+                一条字幕，不论是一个人在停顿换气，还是两个人在对话。
         """
         self.thread_num = thread_num
         self.model = model
         self.max_word_count_cjk = max_word_count_cjk
         self.max_word_count_english = max_word_count_english
+        # 无 API 场景（公益模型）只用规则断句，不发起 LLM 请求
+        self.rules_only = rules_only
+        self.split_type = split_type or SubtitleSplitTypeEnum.SENTENCE
+        # 停顿达到这个时长就一定断开，不管字数够不够、是不是同一个人
+        self.speaker_gap_ms = max(int(speaker_gap_ms or PAUSE_SPLIT_MS), 1)
         self.is_running = True
         self._init_thread_pool()
 
@@ -270,6 +289,8 @@ class SubtitleSplitter:
         """处理单个Segments(带重试和降级)"""
         if not asr_data_part.segments:
             return []
+        if self.rules_only:
+            return self._process_by_rules(asr_data_part.segments)
         try:
             return self._process_by_llm(asr_data_part.segments)
         except Exception as e:
@@ -293,6 +314,7 @@ class SubtitleSplitter:
             model=self.model,
             max_word_count_cjk=self.max_word_count_cjk,
             max_word_count_english=self.max_word_count_english,
+            prompt_path=self.split_type.prompt_path(),
         )
 
         return self._merge_segments_based_on_sentences(segments, sentences)
@@ -313,9 +335,10 @@ class SubtitleSplitter:
         """
         logger.debug(f"Segments: {len(segments)}")
 
-        # 1. Grouped by time gaps
+        # 1. 先按停顿切块：间隔达到阈值就是两句话（同一个人换气也算）。
+        #    默认 1 秒，比原 RULE_SPLIT_GAP（500ms）更贴近"句子边界"的直觉。
         segment_groups = self._group_by_time_gaps(
-            segments, max_gap=RULE_SPLIT_GAP, check_large_gaps=True
+            segments, max_gap=self.speaker_gap_ms, check_large_gaps=False
         )
         logger.debug(f"Grouped by time gaps: {len(segment_groups)}")
 
@@ -333,10 +356,10 @@ class SubtitleSplitter:
             else:
                 common_result_groups.append(group)
 
-        # 3. 拆分超长Segments
+        # 3. 合并成字幕；这里不会再跨越停顿，因为输入已经是切好的块
         result_segments = []
         for group in common_result_groups:
-            result_segments.extend(self._split_long_segment(group))
+            result_segments.extend(self._merge_block_by_length(group))
 
         return result_segments
 
@@ -350,7 +373,8 @@ class SubtitleSplitter:
 
         Args:
             segments: Segments列表
-            max_gap: 最大允许间隔(ms)
+            max_gap: 断句阈值(ms)。间隔 **达到** 这个值就断开（含等于），
+                而不是"超过"，因为 1 秒这种边界值本身就该算作停顿。
             check_large_gaps: 是否检查异常大间隔
 
         Returns:
@@ -381,9 +405,10 @@ class SubtitleSplitter:
                         current_group = []
                         recent_gaps = []
 
-            # 超过最大间隔则分组
-            if time_gap > max_gap:
-                result.append(current_group)
+            # 间隔达到阈值（含等于）就分组
+            if time_gap >= max_gap:
+                if current_group:
+                    result.append(current_group)
                 current_group = []
                 recent_gaps = []
 
@@ -392,7 +417,8 @@ class SubtitleSplitter:
         if current_group:
             result.append(current_group)
 
-        return result
+        # 防御：任何情况下都不要把空组交给下游（会生成空字幕）
+        return [group for group in result if group]
 
     def _split_by_common_words(
         self, segments: List[ASRDataSeg]
@@ -519,9 +545,13 @@ class SubtitleSplitter:
         return result
 
     def _split_long_segment(self, segments: List[ASRDataSeg]) -> List[ASRDataSeg]:
-        """拆分超长Segments
+        """把一组词级片段合成一条条字幕。
 
-        策略:寻找最大时间间隔点进行拆分
+        顺序很重要：
+            1. 先按停顿切块 —— 停顿达到阈值（默认 1 秒）就是两句话，
+               不论是同一个人换气还是两个人对话，都不许并进同一条；
+            2. 每块再按字数上限继续拆；
+            3. 每块合并成一条字幕，时间取该块的首尾。
 
         Args:
             segments: Segments列表
@@ -529,64 +559,69 @@ class SubtitleSplitter:
         Returns:
             拆分后的Segments列表
         """
+        if not segments:
+            return []
+
+        # 1. 先按停顿切块（说话人切换处必须断开）
+        blocks = self._group_by_time_gaps(
+            segments, max_gap=self.speaker_gap_ms, check_large_gaps=False
+        )
+
         result_segs = []
-        segments_to_process = [segments]
+        for block in blocks:
+            result_segs.extend(self._merge_block_by_length(block))
 
-        while segments_to_process:
-            current_segments = segments_to_process.pop(0)
-
-            if not current_segments:
-                continue
-
-            merged_text = "".join(seg.text for seg in current_segments)
-            max_word_count = (
-                self.max_word_count_cjk
-                if is_mainly_cjk(merged_text)
-                else self.max_word_count_english
-            )
-            n = len(current_segments)
-
-            # Segments足够短或无法继续拆分
-            if count_words(merged_text) <= max_word_count or n < RULE_MIN_SEGMENT_SIZE:
-                merged_seg = ASRDataSeg(
-                    merged_text.strip(),
-                    current_segments[0].start_time,
-                    current_segments[-1].end_time,
-                )
-                result_segs.append(merged_seg)
-                continue
-
-            # 检查时间间隔
-            gaps = [
-                current_segments[i + 1].start_time - current_segments[i].end_time
-                for i in range(n - 1)
-            ]
-            all_equal = all(abs(gap - gaps[0]) < 1e-6 for gap in gaps)
-
-            if all_equal:
-                # 间隔相等:中间分割
-                split_index = n // 2
-            else:
-                # 间隔不等:寻找最大间隔点
-                start_idx = max(n // 6, 1)
-                end_idx = min((5 * n) // 6, n - 2)
-                split_index = max(
-                    range(start_idx, end_idx),
-                    key=lambda i: current_segments[i + 1].start_time
-                    - current_segments[i].end_time,
-                    default=n // 2,
-                )
-                if split_index == 0 or split_index == n - 1:
-                    split_index = n // 2
-
-            # 分割并加入处理队列
-            first_segs = current_segments[: split_index + 1]
-            second_segs = current_segments[split_index + 1 :]
-            segments_to_process.extend([first_segs, second_segs])
-
-        # 按时间排序
         result_segs.sort(key=lambda seg: seg.start_time)
         return result_segs
+
+    def _merge_block_by_length(self, segments: List[ASRDataSeg]) -> List[ASRDataSeg]:
+        """把一块内部连续的词合并成不超过字数上限的字幕。
+
+        只在"同一段连续语音"内部合并，不会跨越停顿。
+        """
+        if not segments:
+            return []
+
+        merged_text = "".join(seg.text for seg in segments)
+        max_word_count = (
+            self.max_word_count_cjk
+            if is_mainly_cjk(merged_text)
+            else self.max_word_count_english
+        )
+
+        # 够短，整块就是一条
+        if count_words(merged_text) <= max_word_count or len(segments) < 2:
+            return [
+                ASRDataSeg(
+                    merged_text.strip(),
+                    segments[0].start_time,
+                    segments[-1].end_time,
+                )
+            ]
+
+        # 太长：在最靠近中段、且停顿最大的位置切开
+        n = len(segments)
+        gaps = [
+            segments[i + 1].start_time - segments[i].end_time for i in range(n - 1)
+        ]
+        all_equal = all(abs(gap - gaps[0]) < 1e-6 for gap in gaps)
+
+        if all_equal:
+            split_index = n // 2
+        else:
+            start_idx = max(n // 6, 1)
+            end_idx = min((5 * n) // 6, n - 2)
+            split_index = max(
+                range(start_idx, max(end_idx, start_idx + 1)),
+                key=lambda i: gaps[i],
+                default=n // 2,
+            )
+            if split_index <= 0 or split_index >= n - 1:
+                split_index = n // 2
+
+        first = self._merge_block_by_length(segments[: split_index + 1])
+        second = self._merge_block_by_length(segments[split_index + 1 :])
+        return first + second
 
     def _merge_processed_segments(
         self, processed_segments: List[List[ASRDataSeg]]
@@ -741,22 +776,10 @@ class SubtitleSplitter:
 
                 segs_to_merge = segments[start_seg_index : end_seg_index + 1]
 
-                # 按时间切分避免跨度过大
-                seg_groups = self._group_by_time_gaps(segs_to_merge, max_gap=MAX_GAP)
-
-                for group in seg_groups:
-                    merged_text = "".join(seg.text for seg in group)
-                    merged_start_time = group[0].start_time
-                    merged_end_time = group[-1].end_time
-                    merged_seg = ASRDataSeg(
-                        merged_text, merged_start_time, merged_end_time
-                    )
-
-                    logger.debug(f"Merged segments: {merged_seg.text}")
-
-                    # 拆分超长Segments
-                    split_segs = self._split_long_segment(group)
-                    new_segments.extend(split_segs)
+                # 交给 _split_long_segment：它会先按停顿切块（两人对话必须分开），
+                # 再按字数上限细分。以前这里先按 MAX_GAP(=1.5s) 分组，
+                # 0.4~1.5 秒的换人间隔会被吞掉，两个人的话就并成了一条。
+                new_segments.extend(self._split_long_segment(segs_to_merge))
 
                 max_shift = MATCH_MAX_SHIFT
                 asr_index = end_seg_index + 1

@@ -24,6 +24,7 @@ from videocaptioner.core.entities import (
     LLMServiceEnum,
     SubtitleLayoutEnum,
     SubtitleRenderModeEnum,
+    SubtitleSplitTypeEnum,
     TranscribeLanguageEnum,
     TranscribeModelEnum,
     TranscribeOutputFormatEnum,
@@ -237,6 +238,22 @@ class Config(QConfig):
     max_word_count_english = ConfigItem(
         "Subtitle", "MaxWordCountEnglish", 20, RangeValidator(8, 100)
     )
+    # 分割类型：句子分段（一句一条）/ 语义分段
+    split_type = OptionsConfigItem(
+        "Subtitle",
+        "SplitType",
+        SubtitleSplitTypeEnum.SENTENCE,
+        OptionsValidator(SubtitleSplitTypeEnum),
+        EnumSerializer(SubtitleSplitTypeEnum),
+    )
+    # 是否去掉字幕末尾的标点
+    remove_punctuation = ConfigItem(
+        "Subtitle", "RemovePunctuation", True, BoolValidator()
+    )
+    # 说话停顿达到这个时长就另起一条字幕（毫秒）
+    speaker_gap_ms = ConfigItem(
+        "Subtitle", "SpeakerGapMs", 1000, RangeValidator(200, 5000)
+    )
     custom_prompt_text = ConfigItem("Subtitle", "CustomPromptText", "")
 
     # ------------------- 字幕合成配置 -------------------
@@ -332,3 +349,21 @@ cfg = Config()
 cfg.themeMode.value = Theme.DARK
 cfg.themeColor.value = QColor("#ff28f08b")
 qconfig.load(SETTINGS_PATH, cfg)
+
+
+def _migrate_pause_split_threshold() -> None:
+    """把早期测试版写入的 400ms 阈值升级为新的 1 秒。
+
+    停顿断句阈值最初实现时默认值是 400 毫秒（过于激进），
+    后来按需求改成 1000 毫秒。老配置文件里可能已经存了 400，
+    这里做一次性迁移，避免用户拿到新版本却仍是旧行为。
+    """
+    try:
+        if cfg.speaker_gap_ms.value == 400:
+            cfg.speaker_gap_ms.value = 1000
+            qconfig.save()
+    except Exception:
+        pass
+
+
+_migrate_pause_split_threshold()

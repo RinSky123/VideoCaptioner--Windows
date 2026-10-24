@@ -17,21 +17,23 @@ def split_by_llm(
     model: str = "gpt-4o-mini",
     max_word_count_cjk: int = 18,
     max_word_count_english: int = 12,
+    prompt_path: str = "split/sentence",
 ) -> List[str]:
-    """使用LLM进行文本断句（固定使用句子Segments）
+    """使用LLM进行文本断句
 
     Args:
         text: 待断句的文本
         model: LLM模型名称
         max_word_count_cjk: 中文最大字符数
         max_word_count_english: 英文最大单词数
+        prompt_path: 断句提示词（split/sentence 句子分段、split/semantic 语义分段）
 
     Returns:
         断句后的文本列表
     """
     try:
         return _split_with_agent_loop(
-            text, model, max_word_count_cjk, max_word_count_english
+            text, model, max_word_count_cjk, max_word_count_english, prompt_path
         )
     except Exception as e:
         logger.error(f"Sentence splitting failed: {e}")
@@ -43,9 +45,9 @@ def _split_with_agent_loop(
     model: str,
     max_word_count_cjk: int,
     max_word_count_english: int,
+    prompt_path: str = "split/sentence",
 ) -> List[str]:
     """使用agent loop 建立反馈循环进行文本断句，自动验证和修正"""
-    prompt_path = "split/sentence"
     system_prompt = get_prompt(
         prompt_path,
         max_word_count_cjk=max_word_count_cjk,

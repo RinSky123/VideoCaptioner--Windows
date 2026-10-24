@@ -94,6 +94,7 @@ def run(args: Namespace, config: dict) -> int:
     batch_size = get(config, "subtitle.batch_size", 20)
     max_cjk = get(config, "subtitle.max_word_count_cjk", 18)
     max_english = get(config, "subtitle.max_word_count_english", 12)
+    speaker_gap_ms = get(config, "subtitle.speaker_gap_ms", 1000)
 
     # Validate numeric ranges
     if thread_num < 1:
@@ -192,6 +193,7 @@ def run(args: Namespace, config: dict) -> int:
                 model=llm_model,
                 max_word_count_cjk=max_cjk,
                 max_word_count_english=max_english,
+                speaker_gap_ms=speaker_gap_ms,
             )
             asr_data = splitter.split_subtitle(asr_data)
 

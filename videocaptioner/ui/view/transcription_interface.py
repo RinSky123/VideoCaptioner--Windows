@@ -49,6 +49,9 @@ from videocaptioner.core.entities import (
 from videocaptioner.core.utils.platform_utils import get_available_transcribe_models, open_folder
 from videocaptioner.ui.common.config import cfg
 from videocaptioner.ui.common.signal_bus import signalBus
+from videocaptioner.ui.components.AudioTrackSelectionDialog import (
+    detect_and_choose_audio_track,
+)
 from videocaptioner.ui.components.transcription_setting_card import TranscriptionSettingCard
 from videocaptioner.ui.components.TranscriptionSettingDialog import TranscriptionSettingDialog
 from videocaptioner.ui.task_factory import TaskFactory
@@ -240,6 +243,14 @@ class VideoInfoCard(CardWidget):
         self.selected_audio_track_index = array_index  # 保存数组索引，传给 ffmpeg
         self.update_audio_track_button_text(audio_streams, array_index)
 
+    def set_audio_track_index(self, array_index: int) -> None:
+        """外部（音轨选择弹窗）指定音轨后同步按钮显示"""
+        streams = getattr(self.video_info, "audio_streams", None) or []
+        if not streams or array_index >= len(streams):
+            return
+        self.selected_audio_track_index = array_index
+        self.update_audio_track_button_text(streams, array_index)
+
     def update_thumbnail(self, thumbnail_path):
         """更新视频缩略图"""
         if not Path(thumbnail_path).exists():
@@ -354,6 +365,7 @@ class TranscriptionInterface(QWidget):
         self.setAcceptDrops(True)
         self.task: Optional[TranscribeTask] = None
         self.is_processing: bool = False
+        self._audio_track_prompted_for: Optional[str] = None
 
         self._init_ui()
         self._setup_signals()
@@ -496,9 +508,35 @@ class TranscriptionInterface(QWidget):
     def update_info(self, file_path):
         """设置UI"""
         self.video_info_thread = VideoInfoThread(file_path)
-        self.video_info_thread.finished.connect(self.video_info_card.update_info)
+        self.video_info_thread.finished.connect(self._on_video_info_loaded)
         self.video_info_thread.error.connect(self._on_video_info_error)
         self.video_info_thread.start()
+
+    def _on_video_info_loaded(self, video_info) -> None:
+        """视频信息就绪：更新界面，并在多音轨时弹窗选择"""
+        self.video_info_card.update_info(video_info)
+
+        if self._audio_track_prompted_for == video_info.file_path:
+            return
+        streams = getattr(video_info, "audio_streams", None) or []
+        if len(streams) <= 1:
+            return
+
+        # 语音转录入口：检测到多音轨时直接弹窗，让用户先选好音轨
+        self._audio_track_prompted_for = video_info.file_path
+        index, cancelled = detect_and_choose_audio_track(
+            video_info.file_path, self.window(), video_info=video_info
+        )
+        if cancelled:
+            InfoBar.warning(
+                self.tr("已取消选择音轨"),
+                self.tr("未选择音轨，将使用第一条音轨"),
+                duration=INFOBAR_DURATION_WARNING,
+                parent=self,
+            )
+            return
+
+        self.video_info_card.set_audio_track_index(index)
 
     def _on_video_info_error(self, error_msg):
         """处理视频信息提取错误"""
@@ -514,6 +552,11 @@ class TranscriptionInterface(QWidget):
         """设置任务并更新UI"""
         self.task = task
         self.video_info_card.set_task(self.task)
+        self.video_info_card.selected_audio_track_index = (
+            task.selected_audio_track_index
+        )
+        # 音轨已在任务创建页选过，进度页无需再弹窗
+        self._audio_track_prompted_for = task.file_path
         self.update_info(self.task.file_path)
 
     def process(self):

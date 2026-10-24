@@ -140,6 +140,9 @@ class SubtitleThread(QThread):
                     model=subtitle_config.llm_model,
                     max_word_count_cjk=subtitle_config.max_word_count_cjk,
                     max_word_count_english=subtitle_config.max_word_count_english,
+                    rules_only=subtitle_config.offline_mode,
+                    split_type=subtitle_config.split_type,
+                    speaker_gap_ms=subtitle_config.speaker_gap_ms,
                 )
                 asr_data = splitter.split_subtitle(asr_data)
                 self.update_all.emit(asr_data.to_json())
@@ -164,7 +167,8 @@ class SubtitleThread(QThread):
                     update_callback=self.callback,
                 )
                 asr_data = optimizer.optimize_subtitle(asr_data)
-                asr_data.remove_punctuation()
+                if subtitle_config.remove_punctuation:
+                    asr_data.remove_punctuation()
                 self.update_all.emit(asr_data.to_json())
 
             # 4. 翻译字幕
@@ -183,50 +187,24 @@ class SubtitleThread(QThread):
 
                 asr_data = translator.translate_subtitle(asr_data)
 
-                # 移除末尾标点符号
-                asr_data.remove_punctuation()
+                # 移除末尾标点符号（可在字幕设置里关掉）
+                if subtitle_config.remove_punctuation:
+                    asr_data.remove_punctuation()
                 self.update_all.emit(asr_data.to_json())
 
-                # 保存翻译结果(单语、双语)
-                if self.task.need_next_task and self.task.video_path:
-                    for layout in SubtitleLayoutEnum:
-                        save_path = str(
-                            Path(self.task.subtitle_path).parent
-                            / f"{Path(self.task.video_path).stem}-{layout.value}.srt"
-                        )
-                        asr_data.save(
-                            save_path=save_path,
-                            ass_style=subtitle_config.subtitle_style or "",
-                            layout=layout,
-                        )
-                        logger.info(f"翻译字幕保存到：{save_path}")
+            # 4.5 规范化时间轴：裁掉重叠、修正零时长、去除跨越静音的长尾，
+            #     保证每条字幕严格落在自己的语音区间内
+            asr_data.enforce_timing()
+            self.update_all.emit(asr_data.to_json())
 
-            # 5. 保存字幕
-            asr_data.save(
-                save_path=self.task.output_path or "",
-                ass_style=subtitle_config.subtitle_style or "",
-                layout=subtitle_config.subtitle_layout or SubtitleLayoutEnum.ONLY_TRANSLATE,
+            # 5. 保存字幕（统一 SRT，文件名带语言标注）
+            saved_paths = self._save_labelled_subtitles(asr_data, subtitle_config)
+            if saved_paths:
+                # 用主要输出的路径对外汇报，后续流程与"打开文件夹"依赖它
+                self.task.output_path = str(saved_paths[0])
+            logger.info(
+                "字幕已保存：%s", ", ".join(str(p) for p in saved_paths)
             )
-            logger.info(f"字幕保存到 {self.task.output_path}")
-
-            # 6. 文件移动与清理
-            if self.task.need_next_task and self.task.video_path:
-                # 保存srt/ass文件到视频目录（对于全流程任务）
-                save_srt_path = (
-                    Path(self.task.video_path).parent / f"{Path(self.task.video_path).stem}.srt"
-                )
-                asr_data.to_srt(
-                    save_path=str(save_srt_path),
-                    layout=subtitle_config.subtitle_layout,
-                )
-                save_ass_path = (
-                    Path(self.task.video_path).parent / f"{Path(self.task.video_path).stem}.ass"
-                )
-                asr_data.to_ass(
-                    save_path=str(save_ass_path),
-                    layout=subtitle_config.subtitle_layout,
-                    style_str=subtitle_config.subtitle_style,
-                )
 
             self.progress.emit(100, self.tr("优化完成"))
             logger.info("优化完成")
@@ -239,7 +217,117 @@ class SubtitleThread(QThread):
         finally:
             clear_task_context()
 
+    def _save_labelled_subtitles(
+        self, asr_data: ASRData, subtitle_config: SubtitleConfig
+    ) -> list:
+        """按语言标注保存字幕，统一为 SRT。
+
+        视频所在目录里只会出现两份（没有翻译时一份），文件名直接标出语言：
+
+            【字幕】视频名-中文.srt
+            【字幕】视频名-英语.srt
+
+        如果用户选了双语布局（原文在上/译文在上），视频合成需要一份中英混排的
+        字幕，这份会写到任务的工作目录，不额外打扰用户。
+
+        Returns:
+            已保存的文件路径列表，第一个是视频合成要用的那份
+        """
+        from pathlib import Path
+
+        from videocaptioner.core.utils.subtitle_naming import (
+            build_subtitle_name,
+            detect_language_name,
+            language_key,
+            language_name_from_code,
+            unique_path,
+        )
+
+        # 用户可见目录：优先视频所在目录，其次字幕所在目录
+        subtitle_path = Path(self.task.subtitle_path)
+        if self.task.video_path:
+            user_dir = Path(self.task.video_path).parent
+            video_stem = Path(self.task.video_path).stem
+        else:
+            user_dir = subtitle_path.parent
+            video_stem = subtitle_path.stem
+        # 单独处理字幕时，来源名里可能已经带了【原始字幕】之类的前缀，去掉避免叠加
+        for tag in ("【原始字幕】", "【下载字幕】", "【字幕】"):
+            video_stem = video_stem.replace(tag, "")
+        video_stem = video_stem.strip() or "字幕"
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        # 工作目录里的文件（双语合成用）不放进用户目录
+        work_dir = subtitle_path.parent if self.task.video_path else user_dir
+
+        has_translation = any(
+            (seg.translated_text or "").strip() for seg in asr_data.segments
+        )
+
+        # 原文语言：先看用户在转录设置里是否明确指定，否则从文本自动检测
+        original_lang = ""
+        specified = getattr(subtitle_config, "source_language", "") or ""
+        if specified and specified.lower() != "auto":
+            original_lang = language_name_from_code(specified)
+        if not original_lang:
+            sample = "\n".join(seg.text for seg in asr_data.segments[:50])
+            original_lang = detect_language_name(sample)
+        if not original_lang:
+            original_lang = "原文"
+
+        # 译文语言：取目标语言
+        translated_lang = ""
+        target = getattr(subtitle_config, "target_language", None)
+        if target is not None:
+            translated_lang = getattr(target, "value", str(target)) or ""
+        if not translated_lang:
+            translated_lang = "译文"
+
+        layout = subtitle_config.subtitle_layout or SubtitleLayoutEnum.ONLY_TRANSLATE
+
+        def _save_one(directory, name_lang: str, second_lang: str, save_layout):
+            name = build_subtitle_name(video_stem, name_lang, second_lang)
+            path = unique_path(directory, name, ".srt")
+            asr_data.to_srt(save_path=str(path), layout=save_layout)
+            logger.info("字幕保存到：%s", path)
+            return path
+
+        # 没有翻译：只产出原文一份
+        if not has_translation:
+            return [
+                _save_one(user_dir, original_lang, "", SubtitleLayoutEnum.ONLY_ORIGINAL)
+            ]
+
+        # 原文、译文各一份，文件名带语言后缀
+        original_path = _save_one(
+            user_dir, original_lang, "", SubtitleLayoutEnum.ONLY_ORIGINAL
+        )
+        translated_path = None
+        # 原文/译文是同一种语言（如中文转简体中文）时不重复生成
+        if language_key(translated_lang) != language_key(original_lang):
+            translated_path = _save_one(
+                user_dir, translated_lang, "", SubtitleLayoutEnum.ONLY_TRANSLATE
+            )
+
+        if layout == SubtitleLayoutEnum.ONLY_TRANSLATE:
+            primary = translated_path or original_path
+        elif layout == SubtitleLayoutEnum.ONLY_ORIGINAL:
+            primary = original_path
+        else:
+            # 双语布局：额外生成一份混排字幕供视频合成使用
+            primary = _save_one(work_dir, original_lang, translated_lang, layout)
+
+        ordered = [primary]
+        for path in (original_path, translated_path):
+            if path is not None and path not in ordered:
+                ordered.append(path)
+        return ordered
+
     def need_llm(self, subtitle_config: SubtitleConfig, asr_data: ASRData):
+        # 公益模型没有 API Key，字词级断句改用规则实现
+        if subtitle_config.offline_mode:
+            return False
+
         return (
             subtitle_config.need_optimize
             or asr_data.is_word_timestamp()

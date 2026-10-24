@@ -315,7 +315,7 @@ class SubtitleInterface(QWidget):
 
         # 添加文稿提示按钮
         self.prompt_button = Action(
-            FIF.DOCUMENT, self.tr("Prompt"), triggered=self.show_prompt_dialog
+            FIF.DOCUMENT, self.tr("提示词"), triggered=self.show_prompt_dialog
         )
         self.command_bar.addAction(self.prompt_button)
 
@@ -619,7 +619,10 @@ class SubtitleInterface(QWidget):
             return
         if not self.task:
             return
-        if self.task.output_path:
+        # 带语言后缀的成品字幕放在视频所在目录；只有单独处理字幕时才看字幕目录
+        if self.task.video_path:
+            target_dir = str(Path(self.task.video_path).parent)
+        elif self.task.output_path:
             output_path = Path(self.task.output_path)
             target_dir = str(
                 output_path.parent

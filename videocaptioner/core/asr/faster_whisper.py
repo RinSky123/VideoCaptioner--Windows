@@ -54,6 +54,7 @@ class FasterWhisperASR(BaseASR):
         max_comma: int = 20,
         max_comma_cent: int = 50,
         prompt: Optional[str] = None,
+        max_gap_ms: int = 1000,
     ):
         super().__init__(audio_input, use_cache)
 
@@ -83,6 +84,9 @@ class FasterWhisperASR(BaseASR):
         self.max_comma = max_comma
         self.max_comma_cent = max_comma_cent
         self.prompt = prompt
+        # 说话的停顿达到这个时长就当断句（毫秒）。faster-whisper 官方默认
+        # 是 3 秒，会把中间停顿 1~2 秒的几句话并成一条字幕。
+        self.max_gap_ms = int(max_gap_ms or 1000)
 
         self.process = None
 
@@ -105,13 +109,19 @@ class FasterWhisperASR(BaseASR):
                 self.faster_whisper_program = "faster-whisper-xxl"
             else:
                 if not shutil.which("faster-whisper"):
-                    raise EnvironmentError("faster-whisper program not found，请确保已经下载。")
+                    raise EnvironmentError(
+                        "找不到 Faster Whisper 程序。请到 设置 → Faster Whisper → "
+                        "「管理模型」里先下载程序；如果已经下载过，可能上次解压不完整，"
+                        "删掉 app\\resource\\bin\\Faster-Whisper-XXL 后重新下载。"
+                    )
                 self.faster_whisper_program = "faster-whisper"
                 self.vad_method = ""
         elif self.device == "cuda":
             if not shutil.which("faster-whisper-xxl"):
                 raise EnvironmentError(
-                    "faster-whisper-xxl 程序未找到，请确保已经下载。"
+                    "找不到 faster-whisper-xxl 程序。请到 设置 → Faster Whisper → "
+                    "「管理模型」里重新下载程序；若之前下载过，说明解压不完整，"
+                    "删掉 app\\resource\\bin\\Faster-Whisper-XXL 后再重试。"
                 )
             self.faster_whisper_program = "faster-whisper-xxl"
 
@@ -172,6 +182,9 @@ class FasterWhisperASR(BaseASR):
             cmd.extend(["--one_word", str(self.one_word)])
 
         if self.sentence:
+            # faster-whisper 的 --max_gap 语义是"间隔大于该值才断句"（严格大于），
+            # 而我们要的是"达到就断"，所以传略小于 1 秒的值让边界也断开。
+            gap_seconds = max(self.max_gap_ms - 1, 100) / 1000
             cmd.extend(
                 [
                     "--sentence",
@@ -183,6 +196,9 @@ class FasterWhisperASR(BaseASR):
                     str(self.max_comma),
                     "--max_comma_cent",
                     str(self.max_comma_cent),
+                    # 停顿达到这个时长就断句（默认 1 秒，官方默认 3 秒太宽）
+                    "--max_gap",
+                    f"{gap_seconds:.3f}",
                 ]
             )
 
@@ -193,8 +209,10 @@ class FasterWhisperASR(BaseASR):
         # 完成的提示音
         cmd.extend(["--beep_off"])
 
-        # 检测 50 系显卡，添加 compute_type 参数
-        if is_rtx_50_series():
+        # 50 系显卡需要 float16 才能正常跑。
+        # 只在真的用 cuda 时才加：用 CPU 识别时加 float16 会直接报
+        # "Requested float16 compute type, but the target device ... do not support"。
+        if self.device == "cuda" and is_rtx_50_series():
             cmd.extend(["--compute_type", "float16"])
 
         return cmd

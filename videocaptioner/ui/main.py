@@ -8,6 +8,12 @@ import sys
 def main():
     import traceback
 
+    # 尽早安装：避免 ffmpeg/ffprobe/whisper 等控制台程序弹出黑框窗口。
+    # 放在最前面，确保后续所有子进程调用都被覆盖（含第三方库内部调用）。
+    from videocaptioner.core.utils.silent_process import install_silent_subprocess
+
+    install_silent_subprocess()
+
     from PyQt5.QtCore import Qt, QTranslator
     from PyQt5.QtWidgets import QApplication
 
@@ -60,6 +66,12 @@ def main():
     app = QApplication(sys.argv)
     app.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings, True)  # type: ignore
 
+    # 任务栏/固定项：让 Windows 把窗口归到 VideoCaptioner 而不是 pythonw
+    from videocaptioner.core.utils.app_identity import apply_app_identity
+
+    apply_app_identity()  # 进程标识 + 开始菜单快捷方式
+
+
     # i18n
     locale = cfg.get(cfg.language).value
     app.installTranslator(FluentTranslator(locale))
@@ -69,6 +81,22 @@ def main():
 
     w = MainWindow()
     w.show()
+
+    # 窗口句柄就绪后写窗口级 AUMID（必须在 show 之后）
+    try:
+        from videocaptioner.core.utils.app_identity import set_window_app_id
+
+        set_window_app_id(int(w.winId()))
+    except Exception:
+        pass
+
+    # 主线程卡顿会被记录到 app.log，便于定位“界面无响应”类问题
+    from videocaptioner.core.utils.ui_watchdog import UIWatchdog
+
+    watchdog = UIWatchdog(app)
+    watchdog.start()
+    app.aboutToQuit.connect(watchdog.stop)
+
     sys.exit(app.exec_())
 
 

@@ -131,15 +131,31 @@ class BaseTranslator(ABC):
                 # Graceful degradation: corrupted cache (e.g. old pickle from app→videocaptioner rename)
                 cached_result = None
                 self._cache.delete(cache_key)
+            # 旧版本会把失败（译文全为空）的结果也写入缓存，这里视为未命中
             if cached_result is not None:
-                return cached_result
+                if all(
+                    (getattr(d, "translated_text", "") or "").strip()
+                    for d in cached_result
+                ):
+                    return cached_result
+                logger.warning("Ignoring cached translation with empty results")
+                self._cache.delete(cache_key)
 
             result = self._translate_chunk(chunk)
 
             if self.update_callback:
                 self.update_callback(result)
 
-            self._cache.set(cache_key, result, expire=86400 * 7)
+            # 只缓存完整结果：部分失败（译文为空）时不能落盘，
+            # 否则一次网络抖动会让这段字幕在 7 天内一直翻译不出来。
+            if all((data.translated_text or "").strip() for data in result):
+                self._cache.set(cache_key, result, expire=86400 * 7)
+            else:
+                logger.warning(
+                    "Skipped caching incomplete translation result "
+                    f"({sum(1 for d in result if not (d.translated_text or '').strip())}"
+                    f"/{len(result)} empty)"
+                )
             return result
 
         except Exception as e:

@@ -271,6 +271,22 @@ class SettingInterface(ScrollArea):
         )
         self.llmServiceCard.comboBox.setMinimumWidth(150)
 
+        # 公益模型说明卡片（选中公益模型时显示，其余配置卡片会自动隐藏）
+        self.publicFreeCard = HyperlinkCard(
+            "",
+            "",
+            FIF.INFO,
+            self.tr("公益模型（免 API）"),
+            self.tr(
+                "无需填写 API Key。翻译使用微软/谷歌免费接口，"
+                "字幕断句与优化不启用。微软翻译国内可直连；"
+                "谷歌翻译需要代理才能访问。"
+            ),
+            self.llmGroup,
+        )
+        self.publicFreeCard.linkButton.hide()
+        self.publicFreeCard.setVisible(False)
+
         # 创建OPENAI官方API链接卡片
         self.openaiOfficialApiCard = HyperlinkCard(
             "https://api.videocaptioner.cn/register?aff=UrLB",
@@ -605,6 +621,8 @@ class SettingInterface(ScrollArea):
 
         # 添加LLM配置卡片
         self.llmGroup.addSettingCard(self.llmServiceCard)
+        # 公益模型说明卡片
+        self.llmGroup.addSettingCard(self.publicFreeCard)
         # 添加OPENAI官方API链接卡片
         self.llmGroup.addSettingCard(self.openaiOfficialApiCard)
         for config in self.llm_service_configs.values():
@@ -832,6 +850,19 @@ class SettingInterface(ScrollArea):
 
         # 隐藏OPENAI官方API链接卡片
         self.openaiOfficialApiCard.setVisible(False)
+
+        # 隐藏公益模型说明卡片
+        self.publicFreeCard.setVisible(False)
+
+        # 公益模型：隐藏所有 API 配置卡片，只显示说明
+        if current_service == LLMServiceEnum.PUBLIC_FREE:
+            self.publicFreeCard.setVisible(True)
+            self.checkLLMConnectionCard.setVisible(False)
+            self.llmGroup.adjustSize()
+            self.expandLayout.update()
+            return
+
+        self.checkLLMConnectionCard.setVisible(True)
 
         # 显示选中服务的卡片
         if current_service in self.llm_service_configs:

@@ -1,5 +1,19 @@
-"""Bing 翻译器"""
+"""Bing 翻译器（免 API Key）
 
+微软旧版 `edge.microsoft.com/translate/auth` 已返回 404 失效，
+这里改用 Bing 网页翻译器自己使用的 `ttranslatev3` 接口：
+
+1. GET https://cn.bing.com/translator 拿到会话 Cookie、IG、IID
+   以及页面内嵌的 `params_AbusePreventionHelper`（key + token）。
+2. POST https://cn.bing.com/ttranslatev3 （表单编码）批量翻译。
+3. 令牌过期/失效时自动刷新一次再重试。
+
+该接口在国内外网络环境下一般都可直接访问，不需要 API Key。
+"""
+
+import html
+import re
+import threading
 from typing import Callable, List, Optional
 
 import requests
@@ -9,9 +23,20 @@ from videocaptioner.core.translate.base import BaseTranslator, logger
 from videocaptioner.core.translate.types import TargetLanguage, get_language_code
 from videocaptioner.core.utils.cache import generate_cache_key
 
+_PAGE_URL = "https://cn.bing.com/translator"
+_TRANSLATE_URL = "https://cn.bing.com/ttranslatev3"
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+)
+
+# 单次请求最多携带的文本条数，避免请求体过大被拒
+_MAX_BATCH = 10
+
 
 class BingTranslator(BaseTranslator):
-    """必应翻译器"""
+    """必应翻译（网页接口，免 API Key）"""
 
     def __init__(
         self,
@@ -28,26 +53,111 @@ class BingTranslator(BaseTranslator):
         )
         self.timeout = 20
         self.session = requests.Session()
-        self.auth_endpoint = "https://edge.microsoft.com/translate/auth"
-        self.translate_endpoint = (
-            "https://api-edge.cognitive.microsofttranslator.com/translate"
-        )
+        self.session.headers.update({"User-Agent": _USER_AGENT})
 
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-        }
+        self._ig = ""
+        self._iid = ""
+        self._key = ""
+        self._token = ""
+        self._request_count = 0
+        # 多个线程同时翻译，刷新令牌必须串行
+        self._auth_lock = threading.Lock()
+
         self._init_session()
 
-    def _init_session(self):
-        """初始化会话，获取必要的token"""
+    # ------------------------------------------------------------------ 认证
+    def _init_session(self) -> None:
+        """获取 IG / IID / abuse-prevention key 与 token"""
         try:
-            response = self.session.get(self.auth_endpoint, timeout=self.timeout)
+            response = self.session.get(_PAGE_URL, timeout=self.timeout)
             response.raise_for_status()
-            self.auth_token = response.text
-            self.headers["authorization"] = f"Bearer {self.auth_token}"
+            page = response.text
         except Exception as e:
-            logger.error(f"Failed to init Bing session: {str(e)}")
-            raise RuntimeError(f"Failed to init Bing session: {str(e)}")
+            logger.error(f"Failed to load Bing translator page: {e}")
+            raise RuntimeError(f"无法访问必应翻译页面：{e}")
+
+        ig = re.search(r'IG:"([0-9A-Fa-f]+)"', page)
+        iid = re.search(r'data-iid="([^"]+)"', page)
+        abuse = re.search(r"params_AbusePreventionHelper\s*=\s*\[([^\]]+)\]", page)
+
+        if not ig or not abuse:
+            logger.error("Bing page layout changed; token not found")
+            raise RuntimeError("必应翻译接口解析失败，页面结构可能已变化")
+
+        values = [part.strip().strip('"') for part in abuse.group(1).split(",")]
+        if len(values) < 2:
+            raise RuntimeError("必应翻译令牌格式异常")
+
+        self._ig = ig.group(1)
+        self._iid = iid.group(1) if iid else "translator.5023"
+        self._key = values[0]
+        self._token = values[1]
+        self._request_count = 0
+
+    def _refresh_token(self) -> None:
+        """串行刷新令牌，避免多线程重复请求"""
+        with self._auth_lock:
+            # 其它线程可能已经刷新过
+            if self._request_count == 0:
+                self._init_session()
+
+    # ------------------------------------------------------------------ 翻译
+    def _request(self, texts: List[str], target_lang: str) -> List[str]:
+        """调用一次 ttranslatev3，返回等长的译文列表
+
+        该接口每次只处理一个 text 字段（重复传 text 只认第一条），
+        但会保留换行，所以用换行拼接多条，返回后再按行拆开。
+        """
+        joined = "\n".join(texts)
+        params = {
+            "isVertical": "1",
+            "IG": self._ig,
+            "IID": f"{self._iid}.{self._request_count}",
+        }
+        data = {
+            "fromLang": "auto-detect",
+            "to": target_lang,
+            "token": self._token,
+            "key": self._key,
+            "text": joined,
+        }
+
+        response = self.session.post(
+            _TRANSLATE_URL,
+            params=params,
+            data=data,
+            headers={"Referer": _PAGE_URL},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        try:
+            body = response.json()
+        except ValueError:
+            raise RuntimeError(f"必应返回了非 JSON 内容：{response.text[:200]}")
+
+        if isinstance(body, dict):
+            # {"statusCode": 205} 表示令牌失效
+            raise RuntimeError(f"必应翻译失败（statusCode={body.get('statusCode')}）")
+
+        if not body:
+            return ["" for _ in texts]
+
+        translations = body[0].get("translations") or []
+        full = translations[0]["text"] if translations else ""
+
+        lines = full.split("\n")
+        if len(lines) == len(texts):
+            return lines
+        if len(texts) == 1:
+            return [full]
+        # 行数对不上（模型合并了句子），按原条数逐条重译
+        logger.warning(
+            f"Bing merged lines ({len(lines)} != {len(texts)}), retrying one by one"
+        )
+        if len(texts) > 1:
+            return [self._request([t], target_lang)[0] for t in texts]
+        return [full]
 
     def _translate_chunk(
         self, subtitle_chunk: List[SubtitleProcessData]
@@ -55,46 +165,32 @@ class BingTranslator(BaseTranslator):
         """翻译字幕块"""
         target_lang = get_language_code(self.target_language, "bing")
 
-        # 准备批量翻译的数据
-        texts_to_translate = [
-            {"Text": data.original_text[:5000]} for data in subtitle_chunk
-        ]
+        pending = [d for d in subtitle_chunk if d.original_text.strip()]
+        for start in range(0, len(pending), _MAX_BATCH):
+            batch = pending[start : start + _MAX_BATCH]
+            texts = [html.unescape(d.original_text[:5000]) for d in batch]
 
-        if texts_to_translate:
-            try:
-                params = {
-                    "to": target_lang,
-                    "api-version": "3.0",
-                    "includeSentenceLength": "true",
-                }
-
-                response = self.session.post(
-                    self.translate_endpoint,
-                    params=params,
-                    headers=self.headers,
-                    json=texts_to_translate,
-                    timeout=self.timeout,
-                )
-                response.raise_for_status()
-                translations = response.json()
-
-                # 处理翻译结果
-                for i, translation in enumerate(translations):
-                    subtitle_chunk[i].translated_text = translation["translations"][0][
-                        "text"
-                    ]
-
-            except Exception as e:
-                logger.error(f"Bing translation failed: {str(e)}")
-                resp = locals().get("response")
-                if "token" in str(e).lower() or (
-                    resp is not None
-                    and getattr(resp, "status_code", None) in [401, 403]
-                ):
-                    try:
-                        self._init_session()
-                    except Exception as e:
-                        logger.error(f"重新Failed to init Bing session: {str(e)}")
+            for attempt in (1, 2):
+                try:
+                    with self._auth_lock:
+                        self._request_count += 1
+                    translated = self._request(texts, target_lang)
+                    if len(translated) != len(batch):
+                        raise RuntimeError(
+                            f"必应返回条数不匹配：期望 {len(batch)}，实际 {len(translated)}"
+                        )
+                    for data, text in zip(batch, translated):
+                        data.translated_text = text
+                    break
+                except Exception as e:
+                    if attempt == 1:
+                        logger.warning(f"Bing translation retry after: {e}")
+                        with self._auth_lock:
+                            self._request_count = 0
+                        self._refresh_token()
+                    else:
+                        logger.error(f"Bing translation failed: {e}")
+                        raise
 
         return subtitle_chunk
 

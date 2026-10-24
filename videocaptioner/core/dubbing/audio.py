@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydub import AudioSegment
 
+from videocaptioner.core.utils.silent_process import silent_run_kwargs
+
 
 def get_audio_duration_ms(path: str) -> int:
     audio = AudioSegment.from_file(path)
@@ -28,7 +30,7 @@ def change_tempo(input_path: str, output_path: str, factor: float) -> None:
         ",".join(filters),
         output_path,
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, **silent_run_kwargs())
 
 
 def create_timeline_audio(
@@ -117,7 +119,7 @@ def mux_dubbed_audio(
             "+faststart",
             output_path,
         ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, **silent_run_kwargs())
 
 
 def _atempo_filters(factor: float) -> list[str]:
@@ -154,6 +156,8 @@ def _video_has_audio(video_path: str) -> bool:
         "json",
         video_path,
     ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, check=True, capture_output=True, text=True, **silent_run_kwargs()
+    )
     data = json.loads(result.stdout or "{}")
     return bool(data.get("streams"))

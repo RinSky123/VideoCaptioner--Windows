@@ -292,16 +292,23 @@ class ChunkMerger:
             for seg in reversed(segments):
                 if seg.start_time >= threshold:
                     overlap.insert(0, seg)
+                elif seg.end_time >= threshold:
+                    # 跨过窗口边界的 segment 也要包含，否则会丢掉半句
+                    overlap.insert(0, seg)
                 else:
-                    break
+                    # 不能用 break：长静音会让扫描提前中断，
+                    # 把窗口内更早的真实语音一并丢掉。
+                    continue
         else:
             # 从开头往后提取
             threshold = segments[0].start_time + duration
             for seg in segments:
                 if seg.end_time <= threshold:
                     overlap.append(seg)
+                elif seg.start_time <= threshold:
+                    overlap.append(seg)
                 else:
-                    break
+                    continue
 
         return overlap
 

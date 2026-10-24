@@ -68,8 +68,8 @@ class LogDetailDialog(MessageBoxBase):
             stage,
             model,
             f"{duration:.1f}s",
-            f"input token: {prompt_tokens}",
-            f"output token: {completion_tokens}",
+            f"输入词元: {prompt_tokens}",
+            f"输出词元: {completion_tokens}",
         ]
         for text in items:
             if text:
@@ -83,7 +83,7 @@ class LogDetailDialog(MessageBoxBase):
         self.viewLayout.addLayout(info_row)
 
         # Request
-        self.viewLayout.addWidget(SubtitleLabel("Request"))
+        self.viewLayout.addWidget(SubtitleLabel(self.tr("请求内容")))
         self.request_edit = PlainTextEdit()
         self.request_edit.setReadOnly(True)
         self.request_edit.setMinimumHeight(180)
@@ -92,7 +92,7 @@ class LogDetailDialog(MessageBoxBase):
         self.viewLayout.addWidget(self.request_edit)
 
         # Response
-        self.viewLayout.addWidget(SubtitleLabel("Response"))
+        self.viewLayout.addWidget(SubtitleLabel(self.tr("返回内容")))
         self.response_edit = PlainTextEdit()
         self.response_edit.setReadOnly(True)
         self.response_edit.setMinimumHeight(180)
@@ -197,7 +197,7 @@ class LLMLogsInterface(QWidget):
                 self.tr("阶段"),
                 self.tr("模型"),
                 self.tr("耗时"),
-                self.tr("Tokens"),
+                self.tr("词元数"),
             ]
         )
 
