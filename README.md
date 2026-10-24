@@ -1,4 +1,10 @@
-<img src="./docs/images/logo.png" alt="VideoCaptioner Logo" width="100">
+              [Logo 图片]
+
+     VideoCaptioner 免安装增强版
+
+  基于 LLM 的智能字幕助手 · 字幕生成/断句/校正/翻译
+
+  [非官方修改版] [GPL-3.0] [基于 v1.4.2]
 # VideoCaptioner 免安装增强版（非官方）
 
 > **这不是官方版本。** 本项目是 [WEIFENG2333/VideoCaptioner](https://github.com/WEIFENG2333/VideoCaptioner)
