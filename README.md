@@ -1,19 +1,22 @@
-              [Logo 图片]
+<div align="center">
 
-     VideoCaptioner 免安装增强版
+<img src="./docs/images/logo.png" alt="VideoCaptioner Logo" width="120">
 
-  基于 LLM 的智能字幕助手 · 字幕生成/断句/校正/翻译
+# VideoCaptioner 免安装增强版
 
-  [非官方修改版] [GPL-3.0] [基于 v1.4.2]
-# VideoCaptioner 免安装增强版（非官方）
+**基于 LLM 的智能字幕助手 · 视频字幕生成 / 断句 / 校正 / 翻译全流程**
+
+[![非官方](https://img.shields.io/badge/版本-非官方修改版-orange)](#)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](./LICENSE)
+[![Base](https://img.shields.io/badge/基于-v1.4.2-green)](https://github.com/WEIFENG2333/VideoCaptioner)
+
+</div>
+
+---
 
 > **这不是官方版本。** 本项目是 [WEIFENG2333/VideoCaptioner](https://github.com/WEIFENG2333/VideoCaptioner)
 > v1.4.2 的个人修改分支，针对便携使用、下载稳定性和中文字幕质量做了改进。
 > 官方版本请访问原仓库。
-
-卡卡字幕助手 | VideoCaptioner —— 基于 LLM 的智能字幕助手，支持视频字幕生成、断句、校正、翻译全流程。
-
----
 
 ## 下载使用
 
