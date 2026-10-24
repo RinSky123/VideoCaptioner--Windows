@@ -3,7 +3,7 @@ import os
 import shutil
 
 import psutil
-from PyQt5.QtCore import QSize, QThread, QUrl
+from PyQt5.QtCore import QSize, Qt, QThread, QUrl
 from PyQt5.QtGui import QDesktopServices, QIcon
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import FluentIcon as FIF
@@ -18,6 +18,7 @@ from qfluentwidgets import (
 
 from videocaptioner.config import ASSETS_PATH, GITHUB_REPO_URL
 from videocaptioner.core.constant import INFOBAR_DURATION_FOREVER
+from videocaptioner.core.utils.logger import setup_logger
 from videocaptioner.ui.common.config import cfg
 from videocaptioner.ui.components.DonateDialog import DonateDialog
 from videocaptioner.ui.thread.version_checker_thread import VersionChecker
@@ -25,9 +26,18 @@ from videocaptioner.ui.view.batch_process_interface import BatchProcessInterface
 from videocaptioner.ui.view.home_interface import HomeInterface
 from videocaptioner.ui.view.llm_logs_interface import LLMLogsInterface
 from videocaptioner.ui.view.setting_interface import SettingInterface
+from videocaptioner.ui.view.subtitle_extract_interface import (
+    SubtitleExtractInterface,
+)
 from videocaptioner.ui.view.subtitle_style_interface import SubtitleStyleInterface
 
 LOGO_PATH = ASSETS_PATH / "logo.png"
+logger = setup_logger("main_window")
+
+# 本优化版自己的仓库（用户反馈走这里）
+PORTABLE_REPO_URL = "https://github.com/RinSky123/VideoCaptioner-Portable-CN"
+# 上游原项目（原版功能的作者）
+UPSTREAM_REPO_URL = "https://github.com/WEIFENG2333/VideoCaptioner"
 
 
 class MainWindow(FluentWindow):
@@ -40,6 +50,7 @@ class MainWindow(FluentWindow):
         self.settingInterface = SettingInterface(self)
         self.subtitleStyleInterface = SubtitleStyleInterface(self)
         self.batchProcessInterface = BatchProcessInterface(self)
+        self.subtitleExtractInterface = SubtitleExtractInterface(self)
         self.llmLogsInterface = LLMLogsInterface(self)
 
         # 初始化版本检查器
@@ -67,6 +78,9 @@ class MainWindow(FluentWindow):
         # 添加导航项
         self.addSubInterface(self.homeInterface, FIF.HOME, self.tr("主页"))
         self.addSubInterface(self.batchProcessInterface, FIF.VIDEO, self.tr("批量处理"))
+        self.addSubInterface(
+            self.subtitleExtractInterface, FIF.COPY, self.tr("字幕提取")
+        )
         self.addSubInterface(self.subtitleStyleInterface, FIF.FONT, self.tr("字幕样式"))
         self.addSubInterface(self.llmLogsInterface, FIF.HISTORY, self.tr("请求日志"))
 
@@ -75,7 +89,7 @@ class MainWindow(FluentWindow):
         # 在底部添加自定义小部件
         self.navigationInterface.addItem(
             routeKey="avatar",
-            text="GitHub",
+            text=self.tr("关于与反馈"),
             icon=FIF.GITHUB,
             onClick=self.onGithubDialog,
             position=NavigationItemPosition.BOTTOM,
@@ -120,22 +134,32 @@ class MainWindow(FluentWindow):
         QApplication.processEvents()
 
     def onGithubDialog(self):
-        """打开GitHub"""
-        w = MessageBox(
-            self.tr("GitHub信息"),
-            self.tr(
-                "VideoCaptioner 由本人在课余时间独立开发完成，目前托管在GitHub上，欢迎Star和Fork。项目诚然还有很多地方需要完善，遇到软件的问题或者BUG欢迎提交Issue。\n\n https://github.com/WEIFENG2333/VideoCaptioner"
-            ),
-            self,
+        """打开 GitHub 信息。
+
+        这里有两个地址，别搞混：
+        - 本优化版（便携增强版）→ 用户反馈问题、提需求走这里
+        - 原项目 → 上游作者的仓库，原版功能的功劳归他
+        """
+        content = self.tr(
+            "【本优化版】\n"
+            "VideoCaptioner 便携增强版，在原项目 v1.4.2 基础上加入了\n"
+            "下载修复、停顿断句、字幕提取、增量更新等改进。\n"
+            "遇到本版的问题或想提建议，欢迎在这里反馈：\n"
+            f"{PORTABLE_REPO_URL}\n\n"
+            "【原项目】\n"
+            "VideoCaptioner 由 WEIFENG2333 独立开发完成，原版功能请访问：\n"
+            f"{UPSTREAM_REPO_URL}\n\n"
+            "如果这个软件对你有帮助，也请给原项目点个 Star。"
         )
-        w.yesButton.setText(self.tr("打开 GitHub"))
-        w.cancelButton.setText(self.tr("支持作者"))
+
+        w = MessageBox(self.tr("关于与反馈"), content, self)
+        w.yesButton.setText(self.tr("打开本版仓库"))
+        w.cancelButton.setText(self.tr("打开原项目"))
+
         if w.exec():
-            QDesktopServices.openUrl(QUrl(GITHUB_REPO_URL))
+            QDesktopServices.openUrl(QUrl(PORTABLE_REPO_URL))
         else:
-            # 点击"支持作者"按钮时打开捐赠对话框
-            donate_dialog = DonateDialog(self)
-            donate_dialog.exec_()
+            QDesktopServices.openUrl(QUrl(UPSTREAM_REPO_URL))
 
     def onNewVersion(self, version, update_required, update_info, download_url):
         """新版本提示"""
@@ -166,11 +190,35 @@ class MainWindow(FluentWindow):
             )
 
     def onAnnouncement(self, content):
-        """显示公告"""
-        w = MessageBox("公告", content, self)
-        w.yesButton.setText("我知道了")
-        w.cancelButton.hide()
-        w.exec()
+        """显示公告。
+
+        这个槽由后台线程的信号触发，可能在窗口还没完全就绪时进来。
+        直接 exec() 一个没有父窗口归属的模态框，一旦抢不到激活状态，
+        用户看到的就是「界面点不动」——所以这里推迟到事件循环空闲再弹，
+        并保证弹窗拿到焦点、可用 Esc 关闭。
+        """
+        from PyQt5.QtCore import QTimer
+
+        # 延后一拍：让主窗口先完成布局与激活，弹窗才有正确的父窗口状态
+        QTimer.singleShot(0, lambda: self._show_announcement(content))
+
+    def _show_announcement(self, content):
+        try:
+            if not self.isVisible():
+                return
+
+            w = MessageBox("公告", content, self)
+            w.yesButton.setText(self.tr("我知道了"))
+            w.cancelButton.hide()
+
+            # 保证用户一定能关掉：Esc 生效、弹窗置顶并激活
+            w.setWindowModality(Qt.ApplicationModal)
+            w.raise_()
+            w.activateWindow()
+            w.exec_()
+        except Exception:
+            # 公告只是锦上添花，出错绝不该影响主界面
+            logger.exception("显示公告失败")
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

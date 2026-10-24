@@ -21,7 +21,13 @@ from qfluentwidgets import (
 )
 from qfluentwidgets import FluentIcon as FIF
 
-from videocaptioner.config import AUTHOR, FEEDBACK_URL, HELP_URL, RELEASE_URL, VERSION, YEAR
+from videocaptioner.config import AUTHOR, HELP_URL, VERSION, YEAR
+
+# 本优化版仓库（反馈、更新都指向这里）
+PORTABLE_REPO_URL = "https://github.com/RinSky123/VideoCaptioner-Portable-CN"
+PORTABLE_RELEASE_URL = PORTABLE_REPO_URL + "/releases"
+# 上游原项目
+UPSTREAM_REPO_URL = "https://github.com/WEIFENG2333/VideoCaptioner"
 from videocaptioner.core.constant import (
     INFOBAR_DURATION_ERROR,
     INFOBAR_DURATION_SUCCESS,
@@ -219,7 +225,15 @@ class SettingInterface(ScrollArea):
             self.tr("提供反馈"),
             FIF.FEEDBACK,
             self.tr("提供反馈"),
-            self.tr("提供反馈帮助我们改进VideoCaptioner"),
+            self.tr("反馈本优化版的问题或建议（GitHub 本版仓库）"),
+            self.aboutGroup,
+        )
+        self.upstreamCard = HyperlinkCard(
+            UPSTREAM_REPO_URL,
+            self.tr("打开原项目"),
+            FIF.GITHUB,
+            self.tr("原项目"),
+            self.tr("VideoCaptioner 原作者 WEIFENG2333 的仓库"),
             self.aboutGroup,
         )
         self.aboutCard = PrimaryPushSettingCard(
@@ -231,7 +245,19 @@ class SettingInterface(ScrollArea):
             + f" {YEAR}, {AUTHOR}. "
             + self.tr("版本")
             + " "
-            + VERSION,
+            + VERSION
+            + self.tr("（便携增强版）"),
+            self.aboutGroup,
+        )
+
+        # 便携版专用：应用增量更新包，只替换变化的文件
+        self.portableUpdateCard = PrimaryPushSettingCard(
+            self.tr("应用更新包"),
+            FIF.DOWNLOAD,
+            self.tr("增量更新"),
+            self.tr(
+                "选择更新包即可升级，不会重新解压、不会丢设置、不用重下模型"
+            ),
             self.aboutGroup,
         )
 
@@ -256,6 +282,8 @@ class SettingInterface(ScrollArea):
 
         self.aboutGroup.addSettingCard(self.helpCard)
         self.aboutGroup.addSettingCard(self.feedbackCard)
+        self.aboutGroup.addSettingCard(self.upstreamCard)
+        self.aboutGroup.addSettingCard(self.portableUpdateCard)
         self.aboutGroup.addSettingCard(self.aboutCard)
 
     def __createLLMServiceCards(self):
@@ -683,13 +711,14 @@ class SettingInterface(ScrollArea):
         self.themeCard.optionChanged.connect(lambda ci: setTheme(cfg.get(ci)))
         self.themeColorCard.colorChanged.connect(setThemeColor)
 
-        # 反馈
+        # 反馈：指向本优化版仓库，不要发到原项目去
         self.feedbackCard.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL))  # type: ignore
+            lambda: QDesktopServices.openUrl(QUrl(PORTABLE_REPO_URL))  # type: ignore
         )
 
         # 关于
         self.aboutCard.clicked.connect(self.checkUpdate)
+        self.portableUpdateCard.clicked.connect(self.openPortableUpdate)
 
         # 全局 signalBus
         self.transcribeModelCard.comboBox.currentTextChanged.connect(
@@ -837,7 +866,15 @@ class SettingInterface(ScrollArea):
             )
 
     def checkUpdate(self):
-        webbrowser.open(RELEASE_URL)
+        """检查更新 → 打开本优化版的 Releases 页面。"""
+        webbrowser.open(PORTABLE_RELEASE_URL)
+
+    def openPortableUpdate(self):
+        """打开增量更新对话框。"""
+        from videocaptioner.ui.components.UpdateDialog import UpdateDialog
+
+        dialog = UpdateDialog(self.window())
+        dialog.exec_()
 
     def __onLLMServiceChanged(self, service):
         """处理LLM服务切换事件"""
