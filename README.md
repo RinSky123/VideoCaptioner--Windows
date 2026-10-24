@@ -1,3 +1,4 @@
+<img src="./docs/images/logo.png" alt="VideoCaptioner Logo" width="100">
 # VideoCaptioner 免安装增强版（非官方）
 
 > **这不是官方版本。** 本项目是 [WEIFENG2333/VideoCaptioner](https://github.com/WEIFENG2333/VideoCaptioner)
